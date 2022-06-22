@@ -220,14 +220,14 @@
       <Uri>https://github.com/dotnet/aspnetcore</Uri>
       <Sha>5834b3eb52e196c7e7653ef6ec57fa9d394b82f5</Sha>
     </Dependency>
-    <Dependency Name="Microsoft.CodeAnalysis.Razor.Tooling.Internal" Version="7.0.0-preview.5.22281.1" Pinned="true">
+    <Dependency Name="Microsoft.CodeAnalysis.Razor.Tooling.Internal" Version="7.0.0-preview.5.22321.2" Pinned="true">
       <Uri>https://github.com/dotnet/razor-compiler</Uri>
-      <Sha>4cf24694112b70c35895666f159e25b07e60fb58</Sha>
+      <Sha>c34a2e3f965b4d16342fdead9cfae1b77061b588</Sha>
       <SourceBuild RepoName="razor-compiler" ManagedOnly="true" />
     </Dependency>
-    <Dependency Name="Microsoft.AspNetCore.Mvc.Razor.Extensions.Tooling.Internal" Version="7.0.0-preview.5.22281.1" Pinned="true">
+    <Dependency Name="Microsoft.AspNetCore.Mvc.Razor.Extensions.Tooling.Internal" Version="7.0.0-preview.5.22321.2" Pinned="true">
       <Uri>https://github.com/dotnet/razor-compiler</Uri>
-      <Sha>4cf24694112b70c35895666f159e25b07e60fb58</Sha>
+      <Sha>c34a2e3f965b4d16342fdead9cfae1b77061b588</Sha>
       <SourceBuild RepoName="razor-compiler" ManagedOnly="true" />
     </Dependency>
     <Dependency Name="Microsoft.AspNetCore.Razor.SourceGenerator.Tooling.Internal" Version="7.0.0-preview.5.22281.1" Pinned="true">
