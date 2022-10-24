@@ -196,14 +196,12 @@ Copyright (c) .NET Foundation. All rights reserved.
       ProjectPath="$(MSBuildProjectFullPath)"
       ProjectAssetsFile="$(ProjectAssetsFile)"
       ProjectLanguage="$(Language)"
-      EmitLegacyAssetsFileItems="$(EmitLegacyAssetsFileItems)"
       TargetFramework="$(TargetFramework)"
-      ContinueOnError="ErrorAndContinue">
+      ContinueOnError="ErrorAndContinue"
+      Condition="'$(EmitLegacyAssetsFileItems)' == 'true'">
 
       <Output TaskParameter="PackageDefinitions" ItemName="PackageDefinitions" />
       <Output TaskParameter="PackageDependencies" ItemName="PackageDependencies" />
-
-      <!-- These outputs only produced when EmitLegacyAssetsFileItems is true -->
       <Output TaskParameter="TargetDefinitions" ItemName="TargetDefinitions" />
       <Output TaskParameter="FileDefinitions" ItemName="FileDefinitions" />
       <Output TaskParameter="FileDependencies" ItemName="FileDependencies" />
@@ -290,7 +288,8 @@ Copyright (c) .NET Foundation. All rights reserved.
       SatelliteResourceLanguages="$(SatelliteResourceLanguages)"
       DesignTimeBuild="$(DesignTimeBuild)"
       ContinueOnError="$(ContinueOnError)"
-      PackageReferences="@(PackageReference)">
+      PackageReferences="@(PackageReference)"
+      DefaultImplicitPackages= "$(DefaultImplicitPackages)">
 
       <!-- NOTE: items names here are inconsistent because they match prior implementation
           (that was spread across different tasks/targets) for backwards compatibility.  -->
@@ -307,6 +306,7 @@ Copyright (c) .NET Foundation. All rights reserved.
       <Output TaskParameter="TransitiveProjectReferences" ItemName="_TransitiveProjectReferences" />
       <Output TaskParameter="PackageFolders" ItemName="AssetsFilePackageFolder" />
       <Output TaskParameter="PackageDependencies" ItemName="PackageDependencies" />
+      <Output TaskParameter="PackageDependenciesDesignTime" ItemName="_PackageDependenciesDesignTime" />
     </ResolvePackageAssets>
 
     <ItemGroup Condition="'$(UseAppHostFromAssetsFile)' == 'true'">
@@ -329,23 +329,9 @@ Copyright (c) .NET Foundation. All rights reserved.
     ============================================================
     -->
 
-  <UsingTask TaskName="Microsoft.NET.Build.Tasks.PreprocessPackageDependenciesDesignTime"
-             AssemblyFile="$(MicrosoftNETBuildTasksAssembly)" />
-
   <Target Name="ResolvePackageDependenciesDesignTime"
           Returns="@(_PackageDependenciesDesignTime)"
-          DependsOnTargets="RunResolvePackageDependencies;ResolveAssemblyReferencesDesignTime">
-
-    <PreprocessPackageDependenciesDesignTime
-          PackageDefinitions="@(PackageDefinitions)"
-          PackageDependencies="@(PackageDependencies)"
-          DefaultImplicitPackages="$(DefaultImplicitPackages)"
-          TargetFramework="$(TargetFramework)">
-
-      <Output TaskParameter="PackageDependenciesDesignTime" ItemName="_PackageDependenciesDesignTime" />
-    </PreprocessPackageDependenciesDesignTime>
-
-  </Target>
+          DependsOnTargets="ResolvePackageAssets;RunResolvePackageDependencies;ResolveAssemblyReferencesDesignTime" />
 
   <!--
     ============================================================

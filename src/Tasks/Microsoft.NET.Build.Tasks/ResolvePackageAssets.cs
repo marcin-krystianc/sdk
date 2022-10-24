@@ -8,6 +8,7 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Xml.Linq;
 using Microsoft.Build.Evaluation;
 using Microsoft.Build.Framework;
 using Microsoft.Build.Utilities;
@@ -28,6 +29,8 @@ namespace Microsoft.NET.Build.Tasks
     /// </summary>
     public sealed class ResolvePackageAssets : TaskBase
     {
+        #region Input Items
+
         /// <summary>
         /// Path to assets.json.
         /// </summary>
@@ -159,6 +162,15 @@ namespace Microsoft.NET.Build.Tasks
         public bool DesignTimeBuild { get; set; }
 
         /// <summary>
+        /// Eg: "Microsoft.NETCore.App;NETStandard.Library"
+        /// </summary>
+        [Required]
+        public string DefaultImplicitPackages { get; set; }
+
+        #endregion
+
+        #region Output Items
+        /// <summary>
         /// Full paths to assemblies from packages to pass to compiler as analyzers.
         /// </summary>
         [Output]
@@ -232,6 +244,19 @@ namespace Microsoft.NET.Build.Tasks
         public ITaskItem[] PackageDependencies { get; private set; }
 
         /// <summary>
+        /// Filters and projects items produced by <see cref="ResolvePackageDependencies"/> for consumption by
+        /// the dependencies tree, via design-time builds.
+        /// </summary>
+        /// <remarks>
+        /// Changes to the implementation of output must be coordinated with <c>PackageRuleHandler</c>
+        /// in the dotnet/project-system repo.
+        /// </remarks>
+        [Output]
+        public ITaskItem[] PackageDependenciesDesignTime { get; private set; }
+
+        /// <summary>
+        #endregion
+
         /// Messages from the assets file.
         /// These are logged directly and therefore not returned to the targets (note private here).
         /// However,they are still stored as ITaskItem[] so that the same cache reader/writer code
@@ -284,7 +309,7 @@ namespace Microsoft.NET.Build.Tasks
         ////////////////////////////////////////////////////////////////////////////////////////////////////
 
         private const int CacheFormatSignature = ('P' << 0) | ('K' << 8) | ('G' << 16) | ('A' << 24);
-        private const int CacheFormatVersion = 10;
+        private const int CacheFormatVersion = 12;
         private static readonly Encoding TextEncoding = Encoding.UTF8;
         private const int SettingsHashLength = 256 / 8;
         private HashAlgorithm CreateSettingsHash() => SHA256.Create();
@@ -315,6 +340,7 @@ namespace Microsoft.NET.Build.Tasks
                 FrameworkReferences = reader.ReadItemGroup();
                 NativeLibraries = reader.ReadItemGroup();
                 PackageDependencies = reader.ReadItemGroup();
+                PackageDependenciesDesignTime = reader.ReadItemGroup();
                 PackageFolders = reader.ReadItemGroup();
                 ResourceAssemblies = reader.ReadItemGroup();
                 RuntimeAssemblies = reader.ReadItemGroup();
@@ -659,7 +685,6 @@ namespace Microsoft.NET.Build.Tasks
                 _lockFile = new LockFileCache(task).GetLockFile(task.ProjectAssetsFile);
                 _packageResolver = NuGetPackageResolver.CreateResolver(_lockFile);
 
-
                 //  If we are doing a design-time build, we do not want to fail the build if we can't find the
                 //  target framework and/or runtime identifier in the assets file.  This is because the design-time
                 //  build needs to succeed in order to get the right information in order to run a restore in order
@@ -780,6 +805,7 @@ namespace Microsoft.NET.Build.Tasks
                 WriteItemGroup(WriteFrameworkReferences);
                 WriteItemGroup(WriteNativeLibraries);
                 WriteItemGroup(WritePackageDependencies);
+                WriteItemGroup(WritePackageDependenciesDesignTime);
                 WriteItemGroup(WritePackageFolders);                
                 WriteItemGroup(WriteResourceAssemblies);
                 WriteItemGroup(WriteRuntimeAssemblies);
@@ -1319,6 +1345,121 @@ namespace Microsoft.NET.Build.Tasks
                     {
                         WriteItem(library.Name);
                     }
+                }
+            }
+
+            // This implementation was taken from PreprocessPackageDependenciesDesignTime.ExecuteCore
+            // with some minor modifications to use WriteItem instead of saving it into an array.
+            private void WritePackageDependenciesDesignTime()
+            {
+                List<string> packageDependencies = GetPackageDependencies();
+
+                var implicitPackageReferences = CollectSDKReferencesDesignTime.GetImplicitPackageReferences(_task.DefaultImplicitPackages);
+
+                // We have two types of data:
+                //
+                // 1) "PackageDependencies" which place a package in a given target/hierarchy
+                // 2) "PackageDefinitions" which provide general metadata about a package
+                //
+                // First, we scan PackageDependencies to build the set of packages in our target.
+
+                var allowItemSpecs = packageDependencies.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                // Second, find PackageDefinitions that match our allowed item specs
+
+                foreach (var package in _lockFile.Libraries)
+                {
+                    var packageVersion = package.Version.ToNormalizedString();
+                    string packageId = $"{package.Name}/{packageVersion}";
+
+                    if (string.IsNullOrEmpty(package.Name) || !allowItemSpecs.Contains(packageId))
+                    {
+                        // Name is required
+                        // We are not interested in this definition (not top-level, or wrong target)
+                        continue;
+                    }
+
+                    var dependencyType = GetDependencyType(package.Type);
+
+                    if (dependencyType == DependencyType.Package ||
+                        dependencyType == DependencyType.Unresolved)
+                    {
+                        WriteItem(packageId);
+                        WriteMetadata(MetadataKeys.Name, package.Name);
+
+                        var version = packageVersion ?? string.Empty;
+                        WriteMetadata(MetadataKeys.Version, version);
+
+                        var isImplicitlyDefined = implicitPackageReferences.Contains(package.Name);
+                        WriteMetadata(MetadataKeys.IsImplicitlyDefined, isImplicitlyDefined.ToString());
+
+                        string resolvedPackagePath = _packageResolver.GetPackageDirectory(package.Name, package.Version);
+                        var resolvedPath = resolvedPackagePath ?? string.Empty;
+                        var resolved = !string.IsNullOrEmpty(resolvedPath);
+                        WriteMetadata(MetadataKeys.Resolved, resolved.ToString());
+
+                        string itemPath = package.Path ?? string.Empty;
+                        var path = (resolved
+                            ? resolvedPath
+                            : itemPath) ?? string.Empty;
+                        WriteMetadata(MetadataKeys.Path, path);
+
+                        string itemDiagnosticLevel = GetPackageDiagnosticLevel(package);
+                        var diagnosticLevel = itemDiagnosticLevel ?? string.Empty;
+                        WriteMetadata(MetadataKeys.DiagnosticLevel, diagnosticLevel);
+                    }
+                }
+
+                List<string> GetPackageDependencies()
+                {
+                    List<string> dependencies = new();
+                    HashSet<string> projectFileDependencies = _lockFile.GetProjectFileDependencySet(_compileTimeTarget.Name);
+
+                    var resolvedPackageVersions = _compileTimeTarget.Libraries
+                        .ToDictionary(pkg => pkg.Name, pkg => pkg.Version.ToNormalizedString(), StringComparer.OrdinalIgnoreCase);
+
+                    string frameworkAlias = _lockFile.GetLockFileTargetAlias(_compileTimeTarget);
+
+                    foreach (var package in _compileTimeTarget.Libraries)
+                    {
+                        if (projectFileDependencies.Contains(package.Name))
+                        {
+                            string packageId = GetPackageId(package);
+
+                            // itemSpec
+                            dependencies.Add(packageId);
+                        }
+                    }
+
+                    return dependencies;
+                }
+
+                static string GetPackageId(LockFileTargetLibrary package) => $"{package.Name}/{package.Version.ToNormalizedString()}";
+
+                string GetPackageDiagnosticLevel(LockFileLibrary package)
+                {
+                    string target = _task.TargetFramework ?? "";
+
+                    var messages = _lockFile.LogMessages.Where(log => log.LibraryId == package.Name && log.TargetGraphs
+                                    .Select(tg =>
+                                    {
+                                        var parsedTargetGraph = NuGetFramework.Parse(tg);
+                                        var alias = _lockFile.PackageSpec.TargetFrameworks.FirstOrDefault(tf => tf.FrameworkName == parsedTargetGraph)?.TargetAlias;
+                                        return alias ?? tg;
+                                    }).Contains(target));
+
+                    if (messages.Count() == 0)
+                    {
+                        return string.Empty;
+                    }
+
+                    return messages.Max(log => log.Level).ToString();
+                }
+
+                static DependencyType GetDependencyType(string dependencyTypeString)
+                {
+                    Enum.TryParse(dependencyTypeString, ignoreCase: true, out DependencyType dependencyType);
+                    return dependencyType;
                 }
             }
 

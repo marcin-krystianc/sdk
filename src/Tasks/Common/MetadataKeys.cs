@@ -129,5 +129,8 @@ namespace Microsoft.NET.Build.Tasks
         public const string IsVersion5 = "IsVersion5";
         public const string CreateCompositeImage = "CreateCompositeImage";
         public const string PerfmapFormatVersion = "PerfmapFormatVersion";
+
+        // Dependencies design time
+        public const string Resolved = "Resolved";
     }
 }
