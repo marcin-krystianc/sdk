@@ -670,6 +670,7 @@ namespace Microsoft.NET.Build.Tasks
             private Placeholder _metadataStringTablePosition;
             private string _targetFramework;
             private int _itemCount;
+            private Dictionary<(string name, NuGetVersion version), string> _packageResolverCache;
 
             public bool CanWriteToCacheFile { get; set; }
 
@@ -684,7 +685,8 @@ namespace Microsoft.NET.Build.Tasks
                 _task = task;
                 _lockFile = new LockFileCache(task).GetLockFile(task.ProjectAssetsFile);
                 _packageResolver = NuGetPackageResolver.CreateResolver(_lockFile);
-
+                _packageResolverCache = new Dictionary<(string name, NuGetVersion version), string>();
+                
                 //  If we are doing a design-time build, we do not want to fail the build if we can't find the
                 //  target framework and/or runtime identifier in the assets file.  This is because the design-time
                 //  build needs to succeed in order to get the right information in order to run a restore in order
@@ -1599,7 +1601,19 @@ namespace Microsoft.NET.Build.Tasks
                             continue;
                         }
 
-                        string itemSpec = _packageResolver.ResolvePackageAssetPath(library, asset.Path);
+                        var packageKey = (library.Name, library.Version);
+                        if (!_packageResolverCache.TryGetValue(packageKey, out var packageDirectory))
+                        {
+                            packageDirectory = _packageResolver.GetPackageDirectory(library.Name, library.Version);
+                            if (packageDirectory == null)
+                            {
+                                throw new BuildErrorException(string.Format(Strings.PackageNotFound, library.Name, library.Version));
+                            }
+                            
+                            _packageResolverCache.Add(packageKey, packageDirectory);
+                        }
+
+                        string itemSpec = Path.Combine(packageDirectory, NuGetPackageResolver.NormalizeRelativePath(asset.Path));
                         WriteItem(itemSpec, library);
                         WriteMetadata(MetadataKeys.PathInPackage, asset.Path);
 
