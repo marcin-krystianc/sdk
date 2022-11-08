@@ -1,399 +1,148 @@
 ﻿// Copyright (c) .NET Foundation and contributors. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
+using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using FluentAssertions;
 using Microsoft.Build.Framework;
 using Xunit;
+using static Microsoft.NET.Build.Tasks.ResolvePackageAssets;
 
 namespace Microsoft.NET.Build.Tasks.UnitTests
 {
     public class GivenThatWeWantToGetDependenciesViaDesignTimeBuild
     {
-        [Fact]
+        [Fact(Skip = "TODO: fix packagePath from _packagePathResolver returns null")]
         public void ItShouldNotReturnPackagesWithUnknownTypes()
         {
-            var task = new PreprocessPackageDependenciesDesignTime
-            {
-                TargetFramework = "net45",
-                DefaultImplicitPackages = string.Empty,
-                PackageDefinitions = new ITaskItem[]
-                {
-                    new MockTaskItem(
-                        itemSpec: "mockPackageNoType/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.Name, "mockPackageNoType" },
-                            { MetadataKeys.Version, "1.0.0" },
-                            { MetadataKeys.Path, "some path" },
-                            { MetadataKeys.ResolvedPath, "some path" }
-                        }),
-                    new MockTaskItem(
-                        itemSpec: "mockPackageUnknown/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.Name, "mockPackageUnknown" },
-                            { MetadataKeys.Version, "1.0.0" },
-                            { MetadataKeys.Path, "some path" },
-                            { MetadataKeys.ResolvedPath, "some resolved path" },
-                            { MetadataKeys.Type, "qqqq" }
-                        })
-                },
-                PackageDependencies = new ITaskItem[]
-                {
-                    new MockTaskItem(
-                        itemSpec: "mockPackageNoType/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.ParentTarget, "net45" }
-                        }),
-                    new MockTaskItem(
-                        itemSpec: "mockPackageUnknown/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.ParentTarget, "net45" }
-                        })
-                }
-            };
+            string projectAssetsJsonPath = Path.GetTempFileName();
+            string projectCacheAssetsJsonPath = Path.GetTempFileName();
+            var assetsContent =
+"""
+{
+  "version" : 3,
+  "targets" : {
+    "net6.0" : {
+      "Newtonsoft.Json/12.0.1" : {
+        "type" : "package",
+        "compile" : {
+            "lib/netstandard2.0/Newtonsoft.Json.dll" : {
+                "related" : ".pdb;.xml"
+            }
+        },
+        "runtime" : {
+            "lib/netstandard2.0/Newtonsoft.Json.dll" : {
+                "related": ".pdb;.xml"
+            }
+        }
+      },
+      "Newtonsoft.Json.Bson/1.0.2" : {
+          "type" : "package",
+          "dependencies": {
+              "Newtonsoft.Json" : "12.0.1"
+          },
+          "compile" : {
+              "lib/netstandard2.0/Newtonsoft.Json.Bson.dll" : {
+                  "related" : ".pdb;.xml"
+              }
+          },
+          "runtime" : {
+              "lib/netstandard2.0/Newtonsoft.Json.Bson.dll" : {
+                  "related" : ".pdb;.xml"
+               }
+          }
+      }
+    }
+  },
+  "libraries" : {
+    "Newtonsoft.Json/12.0.1" : {
+        "sha512" : "xyz",
+        "type" : "package",
+        "path" : "newtonsoft.json/12.0.1",
+        "files" : [
+            "lib/net20/Newtonsoft.Json.dll",
+            "lib/net20/Newtonsoft.Json.pdb",
+            "lib/net20/Newtonsoft.Json.xml"
+        ]
+    },
+    "Newtonsoft.Json.Bson/1.0.2" : {
+        "sha512" : "abc",
+        "type" : "package",
+        "path" : "newtonsoft.json.bson/1.0.2",
+        "files" : [
+            "lib/net45/Newtonsoft.Json.Bson.dll",
+            "lib/net45/Newtonsoft.Json.Bson.pdb",
+            "lib/net45/Newtonsoft.Json.Bson.xml"
+        ]
+    }
+  },
+  "packageFolders": {
+    "C:\\.nuget\\packages\\" : {}
+  },
+  "project" : {
+      "version" : "1.0.0",
+      "frameworks" : {
+          "net6.0": {
+              "targetAlias" : "net6.0",
+              "dependencies" : {
+                  "Newtonsoft.Json.Bson" : {
+                      "target" : "Package",
+                      "version" : "[1.0.2, )"
+                   }
+              }
+          }
+      }
+  }
+}
+""";
+            File.WriteAllText(projectAssetsJsonPath, assetsContent);
+            var task = InitializeTask(out _);
+            task.ProjectAssetsFile = projectAssetsJsonPath;
+            task.ProjectAssetsCacheFile = projectCacheAssetsJsonPath;
+            task.TargetFramework = "net6.0";
+            task.Execute();
 
-            Assert.True(task.Execute());
+            var item = task.PackageDependenciesDesignTime.Single();
 
-            Assert.Empty(task.PackageDependenciesDesignTime);
+            Assert.Equal("", item.ItemSpec);
+            Assert.Equal("", item.GetMetadata(MetadataKeys.Name));
+            Assert.Equal("", item.GetMetadata(MetadataKeys.Version));
+            Assert.Equal("", item.GetMetadata(MetadataKeys.IsImplicitlyDefined));
+            Assert.Equal("", item.GetMetadata(MetadataKeys.Resolved));
+            Assert.Equal("", item.GetMetadata(MetadataKeys.Path));
+            Assert.Equal("", item.GetMetadata(MetadataKeys.DiagnosticLevel));
         }
 
-        [Fact]
-        public void ItShouldReturnUnresolvedPackageDependenciesWithTypePackage()
+        private ResolvePackageAssets InitializeTask(out IEnumerable<PropertyInfo> inputProperties)
         {
-            var task = new PreprocessPackageDependenciesDesignTime
+            inputProperties = typeof(ResolvePackageAssets)
+                .GetProperties(BindingFlags.DeclaredOnly | BindingFlags.Instance | BindingFlags.Public)
+                .Where(p => !p.IsDefined(typeof(OutputAttribute)) &&
+                            p.Name != nameof(ResolvePackageAssets.DesignTimeBuild))
+                .OrderBy(p => p.Name, StringComparer.Ordinal);
+
+            var requiredProperties = inputProperties
+                .Where(p => p.IsDefined(typeof(RequiredAttribute)));
+
+            var task = new ResolvePackageAssets();
+            // Initialize all required properties as a genuine task invocation would. We do this
+            // because HashSettings need not defend against required parameters being null.
+            foreach (var property in requiredProperties)
             {
-                TargetFramework = "net45",
-                DefaultImplicitPackages = string.Empty,
-                PackageDefinitions = new ITaskItem[]
-                {
-                    new MockTaskItem(
-                        itemSpec: "mockPackageUnresolved/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.Name, "mockPackageUnresolved" },
-                            { MetadataKeys.Version, "1.0.0" },
-                            { MetadataKeys.Path, "some path" },
-                            { MetadataKeys.ResolvedPath, "" },
-                            { MetadataKeys.Type, "Unresolved" },
-                            { MetadataKeys.DiagnosticLevel, "Warning" }
-                        })
-                },
-                PackageDependencies = new ITaskItem[]
-                {
-                    new MockTaskItem(
-                        itemSpec: "mockPackageUnresolved/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.ParentTarget, "net45" }
-                        })
-                }
-            };
+                property.PropertyType.Should().Be(
+                    typeof(string),
+                    because: $"this test hasn't been updated to handle non-string required task parameters like {property.Name}");
 
-            Assert.True(task.Execute());
+                property.SetValue(task, "_");
+            }
 
-            var item = Assert.Single(task.PackageDependenciesDesignTime);
+            task.BuildEngine = new MockBuildEngine();
 
-            Assert.Equal("mockPackageUnresolved/1.0.0", item.ItemSpec);
-            Assert.Equal("mockPackageUnresolved", item.GetMetadata(MetadataKeys.Name));
-            Assert.Equal("1.0.0", item.GetMetadata(MetadataKeys.Version));
-            Assert.Equal("some path", item.GetMetadata(MetadataKeys.Path));
-            Assert.Equal("", item.GetMetadata(MetadataKeys.ResolvedPath));
-            Assert.Equal("Warning", item.GetMetadata(MetadataKeys.DiagnosticLevel));
-            Assert.False(item.GetBooleanMetadata(MetadataKeys.IsImplicitlyDefined));
-            Assert.False(item.GetBooleanMetadata(PreprocessPackageDependenciesDesignTime.ResolvedMetadata));
-        }
-
-        [Fact]
-        public void ItShouldIdentifyDefaultImplicitPackages()
-        {
-            var task = new PreprocessPackageDependenciesDesignTime
-            {
-                TargetFramework = "net45",
-                DefaultImplicitPackages = "DefaultImplicit",
-                PackageDefinitions = new ITaskItem[]
-                {
-                    new MockTaskItem(
-                        itemSpec: "DefaultImplicit/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.Name, "DefaultImplicit" },
-                            { MetadataKeys.Version, "1.0.0" },
-                            { MetadataKeys.Path, "some path" },
-                            { MetadataKeys.ResolvedPath, "" },
-                            { MetadataKeys.Type, "Package" }
-                        })
-                },
-                PackageDependencies = new ITaskItem[]
-                {
-                    new MockTaskItem(
-                        itemSpec: "DefaultImplicit/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.ParentTarget, "net45" }
-                        })
-                }
-            };
-
-            Assert.True(task.Execute());
-
-            var item = Assert.Single(task.PackageDependenciesDesignTime);
-
-            Assert.Equal("DefaultImplicit/1.0.0", item.ItemSpec);
-            Assert.True(item.GetBooleanMetadata(MetadataKeys.IsImplicitlyDefined));
-        }
-
-        [Fact]
-        public void ItShouldIgnoreAllDependenciesWithTypeNotEqualToPackageOrUnresolved()
-        {
-            var task = new PreprocessPackageDependenciesDesignTime
-            {
-                TargetFramework = "net45",
-                DefaultImplicitPackages = string.Empty,
-                PackageDefinitions = new ITaskItem[] {
-                    new MockTaskItem(
-                        itemSpec: "mockPackageExternalProject/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.Name, "mockPackageExternalProject" },
-                            { MetadataKeys.Version, "1.0.0" },
-                            { MetadataKeys.Path, "some path" },
-                            { MetadataKeys.ResolvedPath, "some path" },
-                            { MetadataKeys.Type, "ExternalProject" }
-                        }),
-                    new MockTaskItem(
-                        itemSpec: "mockPackageProject/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.Name, "mockPackageProject" },
-                            { MetadataKeys.Version, "1.0.0" },
-                            { MetadataKeys.Path, "some path" },
-                            { MetadataKeys.ResolvedPath, "some resolved path" },
-                            { MetadataKeys.Type, "Project" }
-                        }),
-                    new MockTaskItem(
-                        itemSpec: "mockPackageContent/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.Name, "mockPackageContent" },
-                            { MetadataKeys.Version, "1.0.0" },
-                            { MetadataKeys.Path, "some path" },
-                            { MetadataKeys.ResolvedPath, "some resolved path" },
-                            { MetadataKeys.Type, "Content" }
-                        }),
-                    new MockTaskItem(
-                        itemSpec: "mockPackageAssembly/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.Name, "mockPackageAssembly" },
-                            { MetadataKeys.Version, "1.0.0" },
-                            { MetadataKeys.Path, "some path" },
-                            { MetadataKeys.ResolvedPath, "some resolved path" },
-                            { MetadataKeys.Type, "Assembly" }
-                        }),
-                    new MockTaskItem(
-                        itemSpec: "mockPackageFrameworkAssembly/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.Name, "mockPackageFrameworkAssembly" },
-                            { MetadataKeys.Version, "1.0.0" },
-                            { MetadataKeys.Path, "some path" },
-                            { MetadataKeys.ResolvedPath, "some resolved path" },
-                            { MetadataKeys.Type, "FrameworkAssembly" }
-                        }),
-                    new MockTaskItem(
-                        itemSpec: "mockPackageDiagnostic/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.Name, "mockPackageDiagnostic" },
-                            { MetadataKeys.Version, "1.0.0" },
-                            { MetadataKeys.Path, "some path" },
-                            { MetadataKeys.ResolvedPath, "some resolved path" },
-                            { MetadataKeys.Type, "Diagnostic" }
-                        }),
-                    new MockTaskItem(
-                        itemSpec: "mockPackageWinmd/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.Name, "mockPackageWinmd" },
-                            { MetadataKeys.Version, "1.0.0" },
-                            { MetadataKeys.Path, "some path" },
-                            { MetadataKeys.ResolvedPath, "some resolved path" },
-                            { MetadataKeys.Type, "Winmd" }
-                        }),
-                    new MockTaskItem(
-                        itemSpec: "mockPackageReference/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.Name, "mockPackageReference" },
-                            { MetadataKeys.Version, "1.0.0" },
-                            { MetadataKeys.Path, "some path" },
-                            { MetadataKeys.ResolvedPath, "some resolved path" },
-                            { MetadataKeys.Type, "Reference" }
-                        })
-                },
-                PackageDependencies = new ITaskItem[] {
-                    new MockTaskItem(
-                        itemSpec: "mockPackageExternalProject/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.ParentTarget, "net45" }
-                        }),
-                    new MockTaskItem(
-                        itemSpec: "mockPackageProject/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.ParentTarget, "net45" }
-                        }),
-                    new MockTaskItem(
-                        itemSpec: "mockPackageContent/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.ParentTarget, "net45" }
-                        }),
-                    new MockTaskItem(
-                        itemSpec: "mockPackageAssembly/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.ParentTarget, "net45" }
-                        }),
-                    new MockTaskItem(
-                        itemSpec: "mockPackageFrameworkAssembly/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.ParentTarget, "net45" }
-                        }),
-                    new MockTaskItem(
-                        itemSpec: "mockPackageDiagnostic/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.ParentTarget, "net45" }
-                        }),
-                    new MockTaskItem(
-                        itemSpec: "mockPackageWinmd/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.ParentTarget, "net45" }
-                        }),
-                    new MockTaskItem(
-                        itemSpec: "mockPackageReference/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.ParentTarget, "net45" }
-                        })
-                }
-            };
-
-            Assert.True(task.Execute());
-
-            Assert.Empty(task.PackageDependenciesDesignTime);
-        }
-
-        [Fact]
-        public void ItShouldOnlyReturnPackagesInTheSpecifiedTarget()
-        {
-            var task = new PreprocessPackageDependenciesDesignTime
-            {
-                TargetFramework = "net45",
-                DefaultImplicitPackages = string.Empty,
-                PackageDefinitions = new ITaskItem[] {
-                    new MockTaskItem(
-                        itemSpec: "Package1/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.Name, "Package1" },
-                            { MetadataKeys.Version, "1.0.0" },
-                            { MetadataKeys.Path, "some path" },
-                            { MetadataKeys.ResolvedPath, "" },
-                            { MetadataKeys.Type, "Package" }
-                        }),
-                    new MockTaskItem(
-                        itemSpec: "Package2/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.Name, "Package2" },
-                            { MetadataKeys.Version, "1.0.0" },
-                            { MetadataKeys.Path, "some path" },
-                            { MetadataKeys.ResolvedPath, "" },
-                            { MetadataKeys.Type, "Package" }
-                        })
-                },
-                PackageDependencies = new ITaskItem[] {
-                    new MockTaskItem(
-                        itemSpec: "Package1/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.ParentTarget, "net45" }
-                        }),
-                    new MockTaskItem(
-                        itemSpec: "Package2/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.ParentTarget, "net46" }
-                        })
-                }
-            };
-
-            Assert.True(task.Execute());
-
-            var item = Assert.Single(task.PackageDependenciesDesignTime);
-
-            Assert.Equal("Package1/1.0.0", item.ItemSpec);
-        }
-
-        [Fact]
-        public void ItShouldOnlyReturnTopLevelPackages()
-        {
-            var task = new PreprocessPackageDependenciesDesignTime
-            {
-                TargetFramework = "net45",
-                DefaultImplicitPackages = string.Empty,
-                PackageDefinitions = new ITaskItem[] {
-                    new MockTaskItem(
-                        itemSpec: "Package1/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.Name, "Package1" },
-                            { MetadataKeys.Version, "1.0.0" },
-                            { MetadataKeys.Path, "some path" },
-                            { MetadataKeys.ResolvedPath, "" },
-                            { MetadataKeys.Type, "Package" }
-                        }),
-                    new MockTaskItem(
-                        itemSpec: "ChildPackage1/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.Name, "ChildPackage1" },
-                            { MetadataKeys.Version, "1.0.0" },
-                            { MetadataKeys.Path, "some path" },
-                            { MetadataKeys.ResolvedPath, "some resolved path" },
-                            { MetadataKeys.Type, "Package" }
-                        })
-                },
-                PackageDependencies = new ITaskItem[] { 
-                    new MockTaskItem(
-                        itemSpec: "Package1/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.ParentTarget, "net45" }
-                        }),
-                    new MockTaskItem(
-                        itemSpec: "ChildPackage1/1.0.0",
-                        metadata: new Dictionary<string, string>
-                        {
-                            { MetadataKeys.ParentTarget, "net45" },
-                            { MetadataKeys.ParentPackage, "Package1/1.0.0" }
-                        })
-                }
-            };
-
-            Assert.True(task.Execute());
-
-            var item = Assert.Single(task.PackageDependenciesDesignTime);
-
-            Assert.Equal("Package1/1.0.0", item.ItemSpec);
+            return task;
         }
     }
 }
+
